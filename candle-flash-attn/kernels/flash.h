@@ -14,7 +14,7 @@ constexpr int D_DIM = 2;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Qkv_params {
-    using index_t = uint32_t;
+    using index_t = int64_t;
     // The QKV matrices.
     void *__restrict__ q_ptr;
     void *__restrict__ k_ptr;
@@ -59,7 +59,7 @@ struct Flash_fwd_params : public Qkv_params {
     void * __restrict__ softmax_lseaccum_ptr;
 
     // The dimensions.
-    int b, seqlen_q, seqlen_k, seqlen_knew, d, seqlen_q_rounded, seqlen_k_rounded, d_rounded, rotary_dim;
+    int b, seqlen_q, seqlen_k, seqlen_knew, d, seqlen_q_rounded, seqlen_k_rounded, d_rounded, rotary_dim, total_q;
 
     // The scaling factors for the kernel.
     float scale_softmax;
@@ -91,7 +91,12 @@ struct Flash_fwd_params : public Qkv_params {
     void * __restrict__ rotary_sin_ptr;
 
     // The indices to index into the KV cache.
-    int *__restrict__ cache_batch_idx;
+    int * __restrict__ cache_batch_idx;
+
+    // Paged KV cache
+    int * __restrict__ block_table;
+    index_t block_table_batch_stride;
+    int page_block_size;
 
     // The dropout probability (probability of keeping an activation).
     float p_dropout;
@@ -109,6 +114,9 @@ struct Flash_fwd_params : public Qkv_params {
     bool is_bf16;
     bool is_causal;
 
+    // Pointer to the RNG seed (idx 0) and offset (idx 1).
+    uint64_t * rng_state;
+
     // If is_seqlens_k_cumulative, then seqlen_k is cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb].
     // Otherwise it's cu_seqlens_k[bidb], i.e., we use cu_seqlens_k to store the sequence lengths of K.
     bool is_seqlens_k_cumulative;
@@ -119,6 +127,9 @@ struct Flash_fwd_params : public Qkv_params {
 
     void * __restrict__ alibi_slopes_ptr;
     index_t alibi_slopes_batch_stride;
+
+    bool unpadded_lse;  // For varlen paths: LSE is in [nheads, total_seqlen_q] format instead of [b, nheads, seqlen_q].
+    bool seqlenq_ngroups_swapped;  // q has been transposed from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d).
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -168,4 +179,4 @@ struct Flash_bwd_params : public Flash_fwd_params {
 template<typename T, int Headdim> void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream);
 template<typename T, int Headdim> void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream);
 
-template<typename T, int Headdim> void run_mha_bwd_(Flash_bwd_params &params, cudaStream_t stream, const bool configure);
+template<typename T, int Headdim> void run_mha_bwd_(Flash_bwd_params &params, cudaStream_t stream);
